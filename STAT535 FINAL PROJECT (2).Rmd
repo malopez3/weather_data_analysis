@@ -1,0 +1,449 @@
+---
+title: "STAT535 Final Project"
+author: "Marco Lopez"
+date: "2024-12-04"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+library(stringr)
+library(writexl)
+```
+
+## Goal
+
+To compare the mean difference between winter temperatures in Boston vs. Amherst and mean difference between summer temperatures in Boston vs. Amherst to see if one city has a significantly higher/lower average temperature in either season.
+
+Use bootstrapping techniques to compare.
+
+## Data Collection
+
+Collect winter 2024 data from Amherst and Boston in January 2024 and February 2024.
+
+Collect summer 2024 data from Amherst and Boston in June 2024 and July 2024.
+
+We will end up having a winter 2024 dataset for Amherst and Boston as well as a summer 2024 dataset for Amherst and Boston (4 total data sets).
+
+```{r}
+# Reading data from excel again::
+library(openxlsx)
+library(truncnorm)
+library(ggplot2)
+set.seed(123)
+```
+
+
+```{r}
+amherst_summer <- read.xlsx('/Users/malop/Documents/STAT535/Amherst_Summer_2024_Data.xlsx')
+x2 <- amherst_summer[,2]
+boston_summer <- read.xlsx('/Users/malop/Documents/STAT535/Boston_Summer_2024_Data.xlsx')
+xv <- boston_summer[,2]
+```
+
+### Amherst Summer
+
+```{r}
+# amherst summer
+hist(x2,prob=TRUE,breaks = 25)
+lines(density(x2),col='blue')
+lines(density(rtruncnorm(length(x2),a=40,b=100,mean = mean(x2),sd=sd(x2))),col='red')
+lines(density(rgamma(length(x2),shape =mean(x2)^2/sd(x2)^2 ,scale = sd(x2)^2/mean(x2))),col='green')
+```
+
+### Boston Summer
+
+```{r}
+#boston summer
+hist(xv,prob=TRUE,breaks = 20)
+lines(density(xv),col='blue')
+lines(density(rtruncnorm(length(xv),a=40,b=100,mean = mean(xv),sd=sd(xv))),col='red')
+lines(density(rgamma(length(xv),shape =mean(xv)^2/sd(xv)^2 ,scale = sd(xv)^2/mean(xv))),col='green')
+
+```
+
+
+Simulating data with truncated Normal distribution,
+```{r}
+#amherst summer
+
+par(mfrow = c(2, 3))
+hist(x2, probability = TRUE,  main = "", ylab = "", xlab = "")
+for (i in 1:5) {
+  x <- rtruncnorm(length(x2),a=40,b=100,mean = mean(x2),sd=sd(x2))
+  hist(x, probability = TRUE, col = rgb(1, 0, 0, 0.5),  main = "", ylab = "", xlab = "")
+}
+```
+
+
+```{r}
+
+#boston summer
+par(mfrow = c(2, 3))
+hist(xv, probability = TRUE,  main = "", ylab = "", xlab = "")
+for (i in 1:5) {
+  x <- rtruncnorm(length(xv),a=40,b=100,mean = mean(xv),sd=sd(xv))
+  hist(x, probability = TRUE, col = rgb(1, 0, 0, 0.5),  main = "", ylab = "", xlab = "")
+}
+
+```
+
+
+Power Test:
+
+```{r}
+#Setting up parameters functoin:
+
+(boston_tN_par <- 
+    boston_summer %>%
+    summarise(n = n(), mean = mean(High_Temperature), sd = sd(High_Temperature)) %>%
+    mutate(n=n, mean = mean, sd = sd))
+
+
+(amherst_tN_par <- 
+    amherst_summer %>%
+    summarise(n = n(), mean = mean(High_Temperature), sd = sd(High_Temperature)) %>%
+    mutate(n=n, mean = mean, sd = sd))
+
+amherst_tN_par <- amherst_tN_par %>% mutate(city = "aS")
+boston_tN_par <- boston_tN_par %>% mutate(city = "bS")
+
+# joining both datasets into a dataframe.
+tN_params <- bind_rows(amherst_tN_par, boston_tN_par)
+```
+
+```{r}
+true_diff_tN <- mean(x2) - mean(xv)
+
+make_tN_sample_df <- function(tN_params,true_diff){
+  
+  dat_diff <- tN_params$mean[1] - tN_params$mean[2]
+  
+  smpl_aS <- rtruncnorm(tN_params$n[1], a= 40, b = 100, mean = tN_params$mean[1], sd=tN_params$sd[1])
+  smpl_bS <- rtruncnorm(tN_params$n[2], a= 40, b = 100, mean = tN_params$mean[2], sd=tN_params$sd[2]) + dat_diff + true_diff
+  
+  return( 
+    tibble(
+      temperature = c(smpl_aS, smpl_bS),
+      city = rep(c("Amherst", "Boston"), tN_params$n)
+    )
+  ) 
+}
+
+```
+
+
+```{r}
+
+make_tN_sample_df(tN_params, 3) %>%
+  ggplot() +
+  geom_histogram(aes(x = temperature, fill = city), alpha = 0.5)
+
+make_tN_sample_df(tN_params, 0) %>%
+  ggplot() +
+  geom_histogram(aes(x = temperature, fill = city), alpha = 0.5)
+
+make_tN_sample_df(tN_params, -3) %>%
+  ggplot() +
+  geom_histogram(aes(x = temperature, fill = city), alpha = 0.5)
+
+```
+
+
+
+
+```{r}
+#t-test
+t_test_df <- function(df,alpha = 0.05){
+  
+  test_result <- t.test(
+    x=df$temperature[df$city=='Amherst'],
+    y=df$temperature[df$city=='Boston'],
+    conf.level = 1-alpha
+  )
+  
+  return(test_result$p.value < alpha)
+}
+
+power_estimator <- function(M = 2000, tN_params, true_diff, alpha= 0.05){
+  t_reject <- 0
+  for (i in 1:M){
+    df <- make_tN_sample_df(tN_params,true_diff)
+    t_reject <- t_reject + t_test_df(df,alpha = alpha)
+  }
+  
+  return(power_t = t_reject/M)
+}
+
+power_estimator(2000, tN_params, -3, 0.05)
+
+power_estimator(2000, tN_params, 0, 0.05)
+
+power_estimator(2000, tN_params, 3, 0.05)
+
+power_estimator(2000, tN_params, -3.31, 0.05)
+```
+
+
+```{r}
+#Full power study::
+alpha <- 0.05; M <- 500
+diff_range <- seq(-6,6,0.5)
+power_study <- sapply(diff_range,function(diff){ power_estimator(M=M, tN_params ,true_diff = diff, alpha = alpha) })
+
+```
+
+
+```{r}
+#making the ggplot::
+ggplot( data.frame(t_power <- power_study, true_diff = diff_range)
+) + 
+  
+  geom_line(aes(x=true_diff, y=t_power),col='blue') + 
+  
+  geom_hline(yintercept = alpha, col='red') +
+  
+  labs(
+    x = "True Difference in Means", y = "Statistical Power", title = "Power Curve for t-test" )  +
+  
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),  
+    axis.title.x = element_text(size = 13),
+    axis.title.y = element_text(size = 13)
+  )
+
+```
+
+
+Trying out gamma:
+
+```{r}
+
+get_gamma_params <- function(mean, sd) {
+  a <- mean^2 / sd^2
+  s <- sd^2 / mean
+  return(list(a = a, s = s))
+}
+
+
+(boston_gamma_par <- 
+    boston_summer %>%
+    summarise(n = n(), mean = mean(High_Temperature), sd = sd(High_Temperature)) %>%
+    mutate(a = get_gamma_params(mean, sd)$a, s = get_gamma_params(mean, sd)$s))
+
+
+(amherst_gamma_par <- 
+    amherst_summer %>%
+    summarise(n = n(), mean = mean(High_Temperature), sd = sd(High_Temperature)) %>%
+    mutate(a = get_gamma_params(mean, sd)$a, s = get_gamma_params(mean, sd)$s))
+
+
+
+```
+
+
+
+```{r}
+par(mfrow = c(2, 3))
+hist(x2, probability = TRUE,  main = "", ylab = "", xlab = "")
+for (i in 1:5) {
+  x <- rgamma(amherst_gamma_par$n, shape = amherst_gamma_par$a, scale = amherst_gamma_par$s)
+  hist(x, probability = TRUE, col = rgb(1, 0, 0, 0.5),  main = "", ylab = "", xlab = "")
+}
+
+```
+
+
+```{r}
+par(mfrow = c(2, 3))
+hist(xv, probability = TRUE,  main = "", ylab = "", xlab = "")
+for (i in 1:5) {
+  x <- rgamma(boston_gamma_par$n, shape = boston_gamma_par$a, scale = boston_gamma_par$s)
+  hist(x, probability = TRUE, col = rgb(1, 0, 0, 0.5),  main = "", ylab = "", xlab = "")
+}
+```
+
+
+
+
+```{r}
+amherst_gamma_par <- amherst_gamma_par %>% mutate(city = "Amherst")
+boston_gamma_par <- boston_gamma_par %>% mutate(city = "Boston")
+
+# Combine the two datasets
+gamma_params <- bind_rows(amherst_gamma_par, boston_gamma_par)
+gamma_params
+```
+
+
+
+```{r}
+
+
+(dat_diff <- gamma_params$mean[1] - gamma_params$mean[2])
+
+gam_params <- gamma_params
+make_two_sample_df <- function(gam_params, true_diff) {
+  dat_diff <- gam_params$mean[1] - gam_params$mean[2]
+  smpl_A <- rgamma(gam_params$n[1], shape = gam_params$a[1], scale = gam_params$s[1])
+  smpl_B <- rgamma(gam_params$n[2], shape = gam_params$a[2], scale = gam_params$s[2]) + dat_diff + true_diff
+  return( 
+    tibble(
+      wt = c(smpl_A, smpl_B),
+      city = rep(c("Amherst", "Boston"), gam_params$n)
+    )
+  )
+}
+
+# Test generative function 
+make_two_sample_df(gamma_params, 3) %>%
+  ggplot() +
+  geom_histogram(aes(x = wt, fill = city), alpha = 0.5)
+
+make_two_sample_df(gamma_params, 0) %>%
+  ggplot() +
+  geom_histogram(aes(x = wt, fill = city), alpha = 0.5)
+
+make_two_sample_df(gamma_params, -3) %>%
+  ggplot() +
+  geom_histogram(aes(x = wt, fill = city), alpha = 0.5)
+
+
+```
+
+
+
+```{r}
+power_estimator(1000, gamma_params, 0, 0.05)
+power_estimator(2000, gamma_params, -3, 0.05)
+
+# added
+
+power_estimator(2000, tN_params, 3.31, 0.05)
+```
+
+
+```{r}
+#Full power study::
+alpha <- 0.05; M <- 500
+diff_range <- seq(-6,6,0.5)
+power_study <- sapply(diff_range,function(diff){ power_estimator(M=M, gamma_params ,true_diff = diff, alpha = alpha) })
+
+```
+
+
+```{r}
+#making the ggplot::
+ggplot( data.frame(t_power <- power_study, true_diff = diff_range)
+) + 
+  
+  geom_line(aes(x=true_diff, y=t_power),col='blue') + 
+  
+  geom_hline(yintercept = alpha, col='red') +
+  
+  labs(
+    x = "True Difference in Means", y = "Statistical Power", title = "Power Curve for t-test" )  +
+  
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),  
+    axis.title.x = element_text(size = 13),
+    axis.title.y = element_text(size = 13)
+  )
+
+```
+
+## Confidence Intervals
+
+```{r}
+# Reading data from excel again:
+library(openxlsx)
+amherst_summer <- read.xlsx('/Users/malop/Documents/STAT535/Amherst_Summer_2024_Data.xlsx')
+amherst_winter <- read.xlsx('/Users/malop/Documents/STAT535/Amherst_Winter_2024_Data.xlsx')
+
+```
+
+```{r}
+boston_summer <- read.xlsx('/Users/malop/Documents/STAT535/Boston_Summer_2024_Data.xlsx')
+boston_winter <- read.xlsx('/Users/malop/Documents/STAT535/Boston_Winter_2024_Data.xlsx')
+```
+
+```{r}
+
+n1 <- nrow(amherst_summer)
+n2 <- nrow(boston_summer)
+(n1==n2)
+n <- n1
+alpha <- 0.05
+M <- 10000
+
+bstp_diff_means <- matrix(0, nrow = M, ncol = 1)
+
+for (m in 1:M) {
+  bootstrap_idx <- sample(n, replace = TRUE)
+  
+  btsp_amherst <- amherst_summer[bootstrap_idx, , drop = FALSE]
+  btsp_boston <- boston_summer[bootstrap_idx, , drop = FALSE]
+  
+  diff_means <- mean(btsp_amherst[, 2]) - mean(btsp_boston[, 2])
+  
+  bstp_diff_means[m] <- diff_means
+}
+
+hist(bstp_diff_means, breaks = 30, main = "Differences in means between Boston and Amherst in Summer",
+     xlab = "Difference in Means", col = "lightblue", border = "white")
+
+obs_diff_means <- mean(amherst_summer[, 2]) - mean(boston_summer[, 2])
+abline(v = obs_diff_means, col = "red", lwd = 2, lty = 2)
+
+lower_ci <- quantile(bstp_diff_means, 0.025, na.rm = TRUE)
+upper_ci <- quantile(bstp_diff_means, 0.975, na.rm = TRUE)
+
+lower_ci
+upper_ci
+
+abline(v = lower_ci, col = "blue", lwd = 2, lty = 2)
+abline(v = upper_ci, col = "blue", lwd = 2, lty = 2)
+```
+
+```{r}
+
+bstp_diff_means <- matrix(0, nrow = M, ncol = 1)
+
+for (m in 1:M) {
+  bootstrap_idx <- sample(n, replace = TRUE)
+
+  btsp_amherst <- amherst_winter[bootstrap_idx, , drop = FALSE]
+  btsp_boston <- boston_winter[bootstrap_idx, , drop = FALSE]
+  
+  diff_means <- mean(btsp_amherst[, 2]) - mean(btsp_boston[, 2])
+  
+  bstp_diff_means[m] <- diff_means
+}
+
+hist(bstp_diff_means, breaks = 30, main = "Differences in means between Boston and Amherst in Winter",
+     xlab = "Difference in Means", col = "lightblue", border = "white")
+
+obs_diff_means <- mean(amherst_winter[, 2]) - mean(boston_winter[, 2])
+abline(v = obs_diff_means, col = "red", lwd = 2, lty = 2)
+
+# Add confidence intervals
+
+lower_ci <- quantile(bstp_diff_means, 0.025, na.rm = TRUE)
+upper_ci <- quantile(bstp_diff_means, 0.975, na.rm = TRUE)
+lower_ci
+upper_ci
+
+abline(v = lower_ci, col = "blue", lwd = 2, lty = 2)
+abline(v = upper_ci, col = "blue", lwd = 2, lty = 2)
+
+```
+
+## Conclusion
+
+We find that there is a statistically significant difference in means between Amherst and Boston in the summer months. There is not a statistically significant difference in means in the winter months.
